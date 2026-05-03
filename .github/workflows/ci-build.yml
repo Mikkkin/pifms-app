@@ -18,5 +18,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: PIFMSApp
-          path: build/PIFMSApp.exe
+          name: PIFMS
+          path: |
+            build/PIFMSApp.exe
+            build/PIFMSService.exe

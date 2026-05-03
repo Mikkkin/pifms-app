@@ -1,0 +1,8 @@
+[
+    uuid(6df5b8a2-b8c4-45aa-95d4-21d00c68a1f1),
+    version(1.0)
+]
+interface PIFMSControl
+{
+    void PifmsStopService([in] handle_t binding);
+}

@@ -2,6 +2,10 @@
 #include <shellapi.h>
 #include <strsafe.h>
 
+#include "common/constants.h"
+#include "gui/rpc_client.h"
+#include "gui/service_guard.h"
+
 #include <string_view>
 
 namespace {
@@ -23,6 +27,11 @@ constexpr wchar_t kOpen[] = L"Открыть";
 constexpr wchar_t kExit[] = L"Выход";
 constexpr wchar_t kRunningMessage[] = L"Test message just for fun";
 } 
+
+[[nodiscard]] bool IsServiceChildMode(std::wstring_view commandLine)
+{
+    return commandLine.find(pifms::kServiceChildArg) != std::wstring_view::npos;
+}
 
 struct AppState {
     HINSTANCE instance = nullptr;
@@ -203,6 +212,7 @@ void HandleCommand(WPARAM wParam)
 
     case CommandId::kTrayExit:
     case CommandId::kFileExit:
+        static_cast<void>(pifms::gui::RequestServiceStop());
         ExitApplication();
         break;
 
@@ -314,6 +324,16 @@ int RunMessageLoop()
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR commandLine, int)
 {
+    const std::wstring_view commandLineView = commandLine != nullptr ? commandLine : L"";
+
+    if (pifms::gui::CheckServiceStartup() == pifms::gui::StartupDecision::Exit) {
+        return 0;
+    }
+
+    if (!IsServiceChildMode(commandLineView) || !pifms::gui::IsParentServiceProcess()) {
+        return 0;
+    }
+
     UniqueHandle singleInstanceMutex(CreateMutexW(nullptr, TRUE, Text::kMutexName));
     if (!singleInstanceMutex) {
         return 1;
@@ -330,7 +350,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR commandLine, int)
         return 1;
     }
 
-    if (!IsSilentMode(commandLine != nullptr ? commandLine : L"")) {
+    if (!IsSilentMode(commandLineView)) {
         ShowWindow(g_app.window, SW_SHOW);
     }
 
