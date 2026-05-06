@@ -7,12 +7,14 @@
 #include <wtsapi32.h>
 
 #include <algorithm>
+#include <cwchar>
 #include <cstdlib>
 #include <string>
 #include <string_view>
 #include <vector>
 
 #include "rpc/pifms_control_api.h"
+#include "service/session_manager.h"
 
 namespace {
 
@@ -116,6 +118,12 @@ public:
 private:
     CRITICAL_SECTION& section_;
 };
+
+pifms::service::SessionManager& GetSessionManager()
+{
+    static pifms::service::SessionManager manager;
+    return manager;
+}
 
 void SetServiceStatusState(DWORD state, DWORD win32ExitCode = NO_ERROR)
 {
@@ -520,6 +528,38 @@ void WINAPI ServiceMain(DWORD, LPWSTR*)
     return result == ERROR_SUCCESS;
 }
 
+void CopyRpcString(wchar_t* destination, size_t destinationSize, const std::wstring& value)
+{
+    if (destination == nullptr || destinationSize == 0) {
+        return;
+    }
+
+    wcsncpy_s(destination, destinationSize, value.c_str(), _TRUNCATE);
+}
+
+void FillRpcUserInfo(const pifms::service::UserSnapshot& source, PifmsRpcUserInfo* destination)
+{
+    if (destination == nullptr) {
+        return;
+    }
+
+    destination->authenticated = source.authenticated ? 1 : 0;
+    destination->userId = source.userId;
+    CopyRpcString(destination->username, ARRAYSIZE(destination->username), source.username);
+}
+
+void FillRpcLicenseInfo(const pifms::service::LicenseSnapshot& source, PifmsRpcLicenseInfo* destination)
+{
+    if (destination == nullptr) {
+        return;
+    }
+
+    destination->active = source.active ? 1 : 0;
+    destination->blocked = source.blocked ? 1 : 0;
+    destination->expirationUnixSeconds = source.expirationUnixSeconds;
+    CopyRpcString(destination->expirationDate, ARRAYSIZE(destination->expirationDate), source.expirationDate);
+}
+
 int InstallService()
 {
     const std::wstring directory = GetExecutableDirectory();
@@ -633,6 +673,68 @@ extern "C" void __RPC_USER midl_user_free(void* pointer)
 extern "C" void PifmsStopService(handle_t)
 {
     static_cast<void>(RequestRpcServerStop());
+}
+
+extern "C" long PifmsGetCurrentUser(handle_t, PifmsRpcUserInfo* userInfo)
+{
+    if (userInfo == nullptr) {
+        return pifms::rpc_result::kInternalError;
+    }
+
+    FillRpcUserInfo(GetSessionManager().GetCurrentUser(), userInfo);
+    return pifms::rpc_result::kOk;
+}
+
+extern "C" long PifmsLogin(handle_t, wchar_t* username, wchar_t* password, PifmsRpcUserInfo* userInfo)
+{
+    if (username == nullptr || password == nullptr || userInfo == nullptr) {
+        return pifms::rpc_result::kInternalError;
+    }
+
+    pifms::service::UserSnapshot snapshot;
+    const long result = GetSessionManager().Login(username, password, snapshot);
+    FillRpcUserInfo(snapshot, userInfo);
+    return result;
+}
+
+extern "C" long PifmsLogout(handle_t)
+{
+    return GetSessionManager().Logout();
+}
+
+extern "C" long PifmsGetLicenseInfo(handle_t, PifmsRpcLicenseInfo* licenseInfo)
+{
+    if (licenseInfo == nullptr) {
+        return pifms::rpc_result::kInternalError;
+    }
+
+    pifms::service::LicenseSnapshot snapshot;
+    const long result = GetSessionManager().GetLicenseInfo(snapshot);
+    FillRpcLicenseInfo(snapshot, licenseInfo);
+    return result;
+}
+
+extern "C" long PifmsActivateProduct(handle_t, wchar_t* activationCode, PifmsRpcLicenseInfo* licenseInfo)
+{
+    if (activationCode == nullptr || licenseInfo == nullptr) {
+        return pifms::rpc_result::kInternalError;
+    }
+
+    pifms::service::LicenseSnapshot snapshot;
+    const long result = GetSessionManager().ActivateProduct(activationCode, snapshot);
+    FillRpcLicenseInfo(snapshot, licenseInfo);
+    return result;
+}
+
+extern "C" long PifmsEnsureAntivirusAvailable(handle_t)
+{
+    pifms::service::LicenseSnapshot snapshot;
+    const long result = GetSessionManager().GetLicenseInfo(snapshot);
+    if (result != pifms::rpc_result::kOk) {
+        return result;
+    }
+
+    return snapshot.active ? pifms::rpc_result::kOk : pifms::rpc_result::kNoLicense;
 }
 
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR commandLine, int)

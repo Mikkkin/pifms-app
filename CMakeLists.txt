@@ -185,6 +185,10 @@ add_executable(PIFMSApp WIN32
 
 add_executable(PIFMSService WIN32
     src/service/service_main.cpp
+    src/common/device_info.cpp
+    src/common/text_utils.cpp
+    src/service/api_client.cpp
+    src/service/session_manager.cpp
 )
 
 add_dependencies(PIFMSApp PIFMSRpcClientStub)
@@ -202,8 +206,8 @@ target_include_directories(PIFMSService PRIVATE
 
 target_compile_features(PIFMSApp PRIVATE cxx_std_17)
 target_compile_features(PIFMSService PRIVATE cxx_std_17)
-target_compile_definitions(PIFMSApp PRIVATE UNICODE _UNICODE)
-target_compile_definitions(PIFMSService PRIVATE UNICODE _UNICODE)
+target_compile_definitions(PIFMSApp PRIVATE UNICODE _UNICODE NOMINMAX _WIN32_WINNT=0x0601)
+target_compile_definitions(PIFMSService PRIVATE UNICODE _UNICODE NOMINMAX _WIN32_WINNT=0x0601)
 
 if(MSVC)
     target_compile_options(PIFMSApp PRIVATE /utf-8 /W4 /permissive-)
@@ -233,4 +237,4 @@ else()
 endif()
 
 target_link_libraries(PIFMSApp PRIVATE PIFMSRpcClientStub advapi32 rpcrt4 shell32 user32)
-target_link_libraries(PIFMSService PRIVATE PIFMSRpcServerStub advapi32 rpcrt4 userenv wtsapi32)
+target_link_libraries(PIFMSService PRIVATE PIFMSRpcServerStub advapi32 crypt32 iphlpapi rpcrt4 userenv winhttp wtsapi32)

@@ -4,5 +4,33 @@
 ]
 interface PIFMSControl
 {
+    typedef struct PifmsRpcUserInfo {
+        long authenticated;
+        unsigned hyper userId;
+        wchar_t username[128];
+    } PifmsRpcUserInfo;
+
+    typedef struct PifmsRpcLicenseInfo {
+        long active;
+        long blocked;
+        hyper expirationUnixSeconds;
+        wchar_t expirationDate[64];
+    } PifmsRpcLicenseInfo;
+
     void PifmsStopService([in] handle_t binding);
+    long PifmsGetCurrentUser([in] handle_t binding, [out] PifmsRpcUserInfo* userInfo);
+    long PifmsLogin(
+        [in] handle_t binding,
+        [in, string] wchar_t* username,
+        [in, string] wchar_t* password,
+        [out] PifmsRpcUserInfo* userInfo
+    );
+    long PifmsLogout([in] handle_t binding);
+    long PifmsGetLicenseInfo([in] handle_t binding, [out] PifmsRpcLicenseInfo* licenseInfo);
+    long PifmsActivateProduct(
+        [in] handle_t binding,
+        [in, string] wchar_t* activationCode,
+        [out] PifmsRpcLicenseInfo* licenseInfo
+    );
+    long PifmsEnsureAntivirusAvailable([in] handle_t binding);
 }
