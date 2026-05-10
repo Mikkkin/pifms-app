@@ -27,3 +27,16 @@ Start-Service PIFMSService
 ## Антивирусные базы
 
 Служба хранит базы в `C:\ProgramData\PIFMS\avdb\signatures.pifmsdb`, держит резервную копию `.bak`, при старте проверяет подписи и может восстановиться из поставляемой базы `resources\avdb\default.pifmsdb`. Обновление баз выполняется каждые 5 минут с предварительным резервным копированием.
+
+## Инсталлятор
+
+| Что | Путь |
+| --- | --- |
+| `PIFMSService.exe`, `PIFMSApp.exe`, `PIFMSAntivirusEngine.exe` | `C:\Program Files\PIFMS\` |
+| Базы и сертификаты (`default.pifmsdb`, `signing.crt`, `dmitrysigning.crt`) | `C:\Program Files\PIFMS\resources\avdb\` |
+| Runtime-база и бэкап (создаётся службой при первом старте) | `C:\ProgramData\PIFMS\avdb\` |
+| Ярлык  | `C:\Users\Public\Desktop\PIFMS.lnk` |
+| Служба | реестр `HKLM\SYSTEM\CurrentControlSet\Services\PIFMSService` (Auto Start, LocalSystem) |
+| MSVC ARM64 рантайм | стандартный путь установщика VC++ Redistributable |
+
+
