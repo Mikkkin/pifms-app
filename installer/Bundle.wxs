@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:bal="http://wixtoolset.org/schemas/v4/wxs/bal"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+
+  <Bundle
+      Name="PIFMS Antivirus Setup"
+      Manufacturer="PIFMS"
+      Version="1.0.0.0"
+      UpgradeCode="B6E4D3F1-4B9F-5F2B-A8D9-2A9F2E3D4C5B"
+      Compressed="yes">
+
+    <BootstrapperApplication>
+      <bal:WixStandardBootstrapperApplication
+          Theme="hyperlinkSidebarLicense"
+          LicenseUrl=""
+          ShowVersion="yes" />
+    </BootstrapperApplication>
+
+    <util:RegistrySearch
+        Id="VCRedistArm64Installed"
+        Variable="VCRedistArm64Installed"
+        Root="HKLM"
+        Key="SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\ARM64"
+        Value="Installed"
+        Result="value" />
+
+    <Chain>
+      <ExePackage
+          Id="VCRedistArm64"
+          DisplayName="Microsoft Visual C++ Redistributable (ARM64)"
+          SourceFile="$(var.VCRedistPath)"
+          PerMachine="yes"
+          Vital="yes"
+          Permanent="no"
+          Cache="keep"
+          InstallArguments="/install /quiet /norestart"
+          UninstallArguments="/uninstall /quiet /norestart"
+          DetectCondition="VCRedistArm64Installed = 1">
+        <ExitCode Value="0" Behavior="success" />
+        <ExitCode Value="1638" Behavior="success" />
+        <ExitCode Value="3010" Behavior="forceReboot" />
+      </ExePackage>
+
+      <MsiPackage
+          Id="PIFMSPackage"
+          SourceFile="$(var.MsiPath)"
+          Vital="yes"
+          Compressed="yes" />
+    </Chain>
+  </Bundle>
+</Wix>

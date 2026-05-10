@@ -22,6 +22,36 @@ jobs:
       - name: Check antivirus engine with test file
         run: .\build\PIFMSAntivirusEngine.exe
 
+      - name: Install WiX Toolset
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          wix extension add -g WixToolset.Util.wixext/5.0.2
+          wix extension add -g WixToolset.BootstrapperApplications.wixext/5.0.2
+
+      - name: Download VC++ Redistributable (ARM64)
+        run: |
+          New-Item -ItemType Directory -Force -Path installer\redist | Out-Null
+          Invoke-WebRequest -Uri "https://aka.ms/vs/17/release/vc_redist.arm64.exe" -OutFile "installer\redist\VC_redist.arm64.exe"
+
+      - name: Build MSI
+        run: |
+          wix build installer\Package.wxs `
+            -arch arm64 `
+            -d BuildDir=build `
+            -d SourceDir=. `
+            -ext WixToolset.Util.wixext `
+            -o build\PIFMSInstaller.msi
+
+      - name: Build Installer Bundle
+        run: |
+          wix build installer\Bundle.wxs `
+            -arch arm64 `
+            -d MsiPath=build\PIFMSInstaller.msi `
+            -d VCRedistPath=installer\redist\VC_redist.arm64.exe `
+            -ext WixToolset.Util.wixext `
+            -ext WixToolset.BootstrapperApplications.wixext `
+            -o build\PIFMSSetup.exe
+
       - uses: actions/upload-artifact@v4
         with:
           name: PIFMS
@@ -29,3 +59,8 @@ jobs:
             build/PIFMSApp.exe
             build/PIFMSService.exe
             build/PIFMSAntivirusEngine.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PIFMSSetup
+          path: build/PIFMSSetup.exe
