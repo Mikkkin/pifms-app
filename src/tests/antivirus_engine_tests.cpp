@@ -5,7 +5,10 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -147,6 +150,48 @@ std::istringstream StreamFromBytes(const std::vector<std::uint8_t>& bytes)
     return std::istringstream(std::string(bytes.begin(), bytes.end()));
 }
 
+std::wstring ExecutableDirectory()
+{
+    std::wstring path(MAX_PATH, L'\0');
+    for (;;) {
+        const DWORD length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
+        if (length == 0) {
+            return {};
+        }
+        if (length < path.size() - 1) {
+            path.resize(length);
+            break;
+        }
+        path.resize(path.size() * 2);
+    }
+
+    const std::size_t separator = path.find_last_of(L"\\/");
+    if (separator == std::wstring::npos) {
+        return {};
+    }
+    path.resize(separator);
+    return path;
+}
+
+std::wstring JoinPath(const std::wstring& base, const wchar_t* relative)
+{
+    std::filesystem::path path(base);
+    path /= relative;
+    return path.wstring();
+}
+
+std::vector<std::uint8_t> ReadFile(const std::wstring& path)
+{
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+        return {};
+    }
+    return std::vector<std::uint8_t>(
+        std::istreambuf_iterator<char>(file),
+        std::istreambuf_iterator<char>()
+    );
+}
+
 bool Expect(bool condition, const char* name)
 {
     if (!condition) {
@@ -217,6 +262,70 @@ int main()
         pifms::service::ScanObjectType::Com
     );
     if (!Expect(eicarResult.malicious && eicarResult.offset == 0, "eicar file not detected")) {
+        return 1;
+    }
+
+    const std::wstring executableDirectory = ExecutableDirectory();
+    const std::wstring certificatePath = JoinPath(executableDirectory, L"resources\\avdb\\signing.crt");
+    const std::vector<std::uint8_t> defaultPackage = ReadFile(JoinPath(executableDirectory, L"resources\\avdb\\default.pifmsdb"));
+    if (!Expect(!defaultPackage.empty(), "default package not found")) {
+        return 1;
+    }
+
+    pifms::service::AntivirusDatabase strictDatabase;
+    if (!Expect(
+            strictDatabase.LoadRawPackage(defaultPackage, certificatePath, true) ==
+                pifms::service::AntivirusDatabaseLoadStatus::Ok,
+            "signed default database load failed")) {
+        return 1;
+    }
+
+    pifms::service::AntivirusEngine strictEngine(strictDatabase);
+    auto strictEicarStream = StreamFromBytes(eicarBytes);
+    if (!Expect(
+            strictEngine.ScanStream(strictEicarStream, L"test.com", pifms::service::ScanObjectType::Com).malicious,
+            "signed default database eicar not detected")) {
+        return 1;
+    }
+
+    std::vector<std::uint8_t> badManifest = defaultPackage;
+    if (badManifest.size() > 24) {
+        badManifest[24] ^= 0x01;
+    }
+    pifms::service::AntivirusDatabase badManifestDatabase;
+    if (!Expect(
+            badManifestDatabase.LoadRawPackage(badManifest, certificatePath, true) ==
+                pifms::service::AntivirusDatabaseLoadStatus::InvalidManifestSignature,
+            "bad manifest signature accepted")) {
+        return 1;
+    }
+
+    std::vector<std::uint8_t> badData = defaultPackage;
+    if (!badData.empty()) {
+        badData.back() ^= 0x01;
+    }
+    pifms::service::AntivirusDatabase badDataDatabase;
+    if (!Expect(
+            badDataDatabase.LoadRawPackage(badData, certificatePath, true) ==
+                pifms::service::AntivirusDatabaseLoadStatus::InvalidDataHash,
+            "bad data hash accepted")) {
+        return 1;
+    }
+
+    const std::vector<std::uint8_t> invalidRecordPackage =
+        ReadFile(JoinPath(executableDirectory, L"test_resources\\invalid-record-signature.pifmsdb"));
+    if (!Expect(!invalidRecordPackage.empty(), "invalid record package not found")) {
+        return 1;
+    }
+
+    pifms::service::AntivirusDatabase invalidRecordDatabase;
+    if (!Expect(
+            invalidRecordDatabase.LoadRawPackage(invalidRecordPackage, certificatePath, true) ==
+                pifms::service::AntivirusDatabaseLoadStatus::Ok,
+            "invalid record package rejected")) {
+        return 1;
+    }
+    if (!Expect(invalidRecordDatabase.GetInfo().recordCount == 0, "invalid record was not skipped")) {
         return 1;
     }
 

@@ -262,4 +262,19 @@ endif()
 
 target_link_libraries(PIFMSApp PRIVATE PIFMSRpcClientStub advapi32 comdlg32 ole32 rpcrt4 shell32 user32)
 target_link_libraries(PIFMSService PRIVATE PIFMSRpcServerStub advapi32 crypt32 iphlpapi rpcrt4 userenv winhttp wtsapi32)
-target_link_libraries(PIFMSAntivirusEngine PRIVATE crypt32)
+target_link_libraries(PIFMSAntivirusEngine PRIVATE advapi32 crypt32)
+
+add_custom_command(TARGET PIFMSService POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            ${CMAKE_SOURCE_DIR}/resources
+            $<TARGET_FILE_DIR:PIFMSService>/resources
+)
+
+add_custom_command(TARGET PIFMSAntivirusEngine POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            ${CMAKE_SOURCE_DIR}/resources
+            $<TARGET_FILE_DIR:PIFMSAntivirusEngine>/resources
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            ${CMAKE_SOURCE_DIR}/src/tests/resources
+            $<TARGET_FILE_DIR:PIFMSAntivirusEngine>/test_resources
+)

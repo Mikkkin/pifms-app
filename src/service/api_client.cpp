@@ -8,6 +8,7 @@
 #include <winhttp.h>
 
 #include <algorithm>
+#include <cwchar>
 #include <string>
 #include <utility>
 #include <vector>
@@ -101,6 +102,19 @@ private:
     return "\"" + std::string(key) + "\":\"" + pifms::JsonEscape(value) + "\"";
 }
 
+[[nodiscard]] std::string BuildIdsJson(const std::vector<std::string>& ids)
+{
+    std::string body = "{\"ids\":[";
+    for (std::size_t index = 0; index < ids.size(); ++index) {
+        if (index != 0) {
+            body += ",";
+        }
+        body += "\"" + pifms::JsonEscape(ids[index]) + "\"";
+    }
+    body += "]}";
+    return body;
+}
+
 }
 
 namespace pifms::service {
@@ -170,6 +184,21 @@ ApiClient::ApiClient()
         {},
         accessToken,
         "application/octet-stream",
+        {}
+    );
+}
+
+[[nodiscard]] HttpResponse ApiClient::DownloadSignatureRecords(
+    const std::string& accessToken,
+    const std::vector<std::string>& ids
+) const
+{
+    return SendRequest(
+        L"POST",
+        L"/api/binary/signatures/by-ids",
+        BuildIdsJson(ids),
+        accessToken,
+        "multipart/mixed",
         {}
     );
 }
@@ -270,6 +299,28 @@ ApiClient::ApiClient()
             &statusCodeSize,
             WINHTTP_NO_HEADER_INDEX)) {
         response.statusCode = statusCode;
+    }
+
+    DWORD contentTypeLength = 0;
+    if (!WinHttpQueryHeaders(
+            request.Get(),
+            WINHTTP_QUERY_CONTENT_TYPE,
+            WINHTTP_HEADER_NAME_BY_INDEX,
+            nullptr,
+            &contentTypeLength,
+            WINHTTP_NO_HEADER_INDEX) &&
+        GetLastError() == ERROR_INSUFFICIENT_BUFFER) {
+        std::wstring contentType(contentTypeLength / sizeof(wchar_t), L'\0');
+        if (WinHttpQueryHeaders(
+                request.Get(),
+                WINHTTP_QUERY_CONTENT_TYPE,
+                WINHTTP_HEADER_NAME_BY_INDEX,
+                contentType.data(),
+                &contentTypeLength,
+                WINHTTP_NO_HEADER_INDEX)) {
+            contentType.resize(wcsnlen_s(contentType.c_str(), contentType.size()));
+            response.contentType = WideToUtf8(contentType);
+        }
     }
 
     for (;;) {

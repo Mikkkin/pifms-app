@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <ctime>
+#include <vector>
 
 namespace {
 
@@ -27,6 +28,93 @@ namespace {
         return pifms::rpc_result::kNoLicense;
     }
     return domainFailure;
+}
+
+void WriteUInt32(std::vector<std::uint8_t>& output, std::uint32_t value)
+{
+    output.push_back(static_cast<std::uint8_t>((value >> 24) & 0xFF));
+    output.push_back(static_cast<std::uint8_t>((value >> 16) & 0xFF));
+    output.push_back(static_cast<std::uint8_t>((value >> 8) & 0xFF));
+    output.push_back(static_cast<std::uint8_t>(value & 0xFF));
+}
+
+[[nodiscard]] std::string MultipartBoundary(const std::string& contentType)
+{
+    const std::string key = "boundary=";
+    const std::size_t start = contentType.find(key);
+    if (start == std::string::npos) {
+        return {};
+    }
+
+    std::string boundary = contentType.substr(start + key.size());
+    const std::size_t semicolon = boundary.find(';');
+    if (semicolon != std::string::npos) {
+        boundary.resize(semicolon);
+    }
+    if (boundary.size() >= 2 && boundary.front() == '"' && boundary.back() == '"') {
+        boundary = boundary.substr(1, boundary.size() - 2);
+    }
+    return boundary;
+}
+
+[[nodiscard]] bool ExtractMultipartPart(
+    const std::string& body,
+    const std::string& boundary,
+    const std::string& name,
+    std::vector<std::uint8_t>& value
+)
+{
+    const std::string marker = "--" + boundary;
+    std::size_t position = 0;
+    for (;;) {
+        position = body.find(marker, position);
+        if (position == std::string::npos) {
+            return false;
+        }
+
+        const std::size_t headerStart = body.find("\r\n", position);
+        if (headerStart == std::string::npos) {
+            return false;
+        }
+
+        const std::size_t contentStart = body.find("\r\n\r\n", headerStart + 2);
+        if (contentStart == std::string::npos) {
+            return false;
+        }
+
+        const std::string headers = body.substr(headerStart + 2, contentStart - headerStart - 2);
+        const std::size_t next = body.find("\r\n" + marker, contentStart + 4);
+        if (next == std::string::npos) {
+            return false;
+        }
+
+        if (headers.find("name=\"" + name + "\"") != std::string::npos) {
+            value.assign(body.begin() + static_cast<std::ptrdiff_t>(contentStart + 4),
+                body.begin() + static_cast<std::ptrdiff_t>(next));
+            return true;
+        }
+
+        position = next + 2;
+    }
+}
+
+[[nodiscard]] bool ParseMultipartPackage(const pifms::service::HttpResponse& response, std::vector<std::uint8_t>& packageData)
+{
+    const std::string boundary = MultipartBoundary(response.contentType);
+    std::vector<std::uint8_t> manifest;
+    std::vector<std::uint8_t> data;
+    if (boundary.empty() ||
+        !ExtractMultipartPart(response.body, boundary, "manifest", manifest) ||
+        !ExtractMultipartPart(response.body, boundary, "data", data)) {
+        return false;
+    }
+
+    packageData.clear();
+    WriteUInt32(packageData, static_cast<std::uint32_t>(manifest.size()));
+    packageData.insert(packageData.end(), manifest.begin(), manifest.end());
+    WriteUInt32(packageData, static_cast<std::uint32_t>(data.size()));
+    packageData.insert(packageData.end(), data.begin(), data.end());
+    return true;
 }
 
 class CriticalSectionLock {
@@ -218,6 +306,40 @@ SessionManager::~SessionManager()
 
     packageData.assign(response.body.begin(), response.body.end());
     return packageData.empty() ? rpc_result::kInvalidServerResponse : rpc_result::kOk;
+}
+
+[[nodiscard]] long SessionManager::DownloadSignatureRecords(
+    const std::vector<std::string>& ids,
+    std::vector<std::uint8_t>& packageData
+)
+{
+    if (ids.empty()) {
+        return rpc_result::kInvalidServerResponse;
+    }
+
+    std::string accessToken;
+    {
+        CriticalSectionLock lock(lock_);
+        if (accessToken_.empty()) {
+            return rpc_result::kAuthenticationRequired;
+        }
+        accessToken = accessToken_;
+    }
+
+    HttpResponse response = api_.DownloadSignatureRecords(accessToken, ids);
+    if (response.transportOk && response.statusCode == 401 && RefreshTokens() == rpc_result::kOk) {
+        {
+            CriticalSectionLock lock(lock_);
+            accessToken = accessToken_;
+        }
+        response = api_.DownloadSignatureRecords(accessToken, ids);
+    }
+
+    if (!IsHttpSuccess(response)) {
+        return MapHttpFailure(response, rpc_result::kInvalidServerResponse);
+    }
+
+    return ParseMultipartPackage(response, packageData) ? rpc_result::kOk : rpc_result::kInvalidServerResponse;
 }
 
 [[nodiscard]] long SessionManager::RefreshTokens()

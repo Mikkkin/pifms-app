@@ -26,10 +26,14 @@ struct AntivirusRecord {
     std::uint64_t objectSignaturePrefix = 0;
     std::uint32_t objectSignatureLength = 0;
     std::vector<std::uint8_t> objectSignature;
+    std::uint64_t remainderLength = 0;
     std::uint64_t offsetBegin = 0;
     std::uint64_t offsetEnd = 0;
     ScanObjectType objectType = ScanObjectType::Unknown;
     std::vector<std::uint8_t> avRecordSignature;
+    std::string firstBytesHex;
+    std::string remainderHashHex;
+    std::string fileTypeUtf8;
     std::wstring threatName;
 };
 
@@ -38,6 +42,13 @@ struct AntivirusDatabaseInfo {
     std::int64_t releaseUnixSeconds = 0;
     std::wstring releaseDate;
     std::uint32_t recordCount = 0;
+};
+
+enum class AntivirusDatabaseLoadStatus : std::uint8_t {
+    Ok = 0,
+    InvalidPackage = 1,
+    InvalidManifestSignature = 2,
+    InvalidDataHash = 3
 };
 
 struct ScanResult {
@@ -53,12 +64,19 @@ struct ScanResult {
 class AntivirusDatabase {
 public:
     [[nodiscard]] bool LoadRawPackage(const std::vector<std::uint8_t>& packageData);
+    [[nodiscard]] AntivirusDatabaseLoadStatus LoadRawPackage(
+        const std::vector<std::uint8_t>& packageData,
+        const std::wstring& certificatePath,
+        bool requireSignatures
+    );
     [[nodiscard]] AntivirusDatabaseInfo GetInfo() const;
+    [[nodiscard]] const std::vector<std::string>& InvalidRecordIds() const;
     [[nodiscard]] const std::map<std::uint64_t, std::vector<AntivirusRecord>>& RecordsByPrefix() const;
     [[nodiscard]] std::vector<std::pair<std::uint64_t, std::uint64_t>> FindPrefixMatches(
         const std::vector<std::uint8_t>& data
     ) const;
     [[nodiscard]] bool Empty() const;
+    void MergeFrom(const AntivirusDatabase& other);
 
 private:
     struct AutomatonNode {
@@ -70,6 +88,7 @@ private:
     void BuildAutomaton();
 
     AntivirusDatabaseInfo info_;
+    std::vector<std::string> invalidRecordIds_;
     std::map<std::uint64_t, std::vector<AntivirusRecord>> recordsByPrefix_;
     std::vector<AutomatonNode> automaton_;
 };
