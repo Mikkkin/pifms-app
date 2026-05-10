@@ -185,10 +185,18 @@ add_executable(PIFMSApp WIN32
 
 add_executable(PIFMSService WIN32
     src/service/service_main.cpp
+    src/service/antivirus_engine.cpp
+    src/service/antivirus_service.cpp
     src/common/device_info.cpp
     src/common/text_utils.cpp
     src/service/api_client.cpp
     src/service/session_manager.cpp
+)
+
+add_executable(PIFMSAntivirusEngine
+    src/tests/antivirus_engine_tests.cpp
+    src/service/antivirus_engine.cpp
+    src/common/text_utils.cpp
 )
 
 add_dependencies(PIFMSApp PIFMSRpcClientStub)
@@ -204,14 +212,21 @@ target_include_directories(PIFMSService PRIVATE
     ${PIFMS_RPC_GENERATED_DIR}
 )
 
+target_include_directories(PIFMSAntivirusEngine PRIVATE
+    src
+)
+
 target_compile_features(PIFMSApp PRIVATE cxx_std_17)
 target_compile_features(PIFMSService PRIVATE cxx_std_17)
+target_compile_features(PIFMSAntivirusEngine PRIVATE cxx_std_17)
 target_compile_definitions(PIFMSApp PRIVATE UNICODE _UNICODE NOMINMAX _WIN32_WINNT=0x0601)
 target_compile_definitions(PIFMSService PRIVATE UNICODE _UNICODE NOMINMAX _WIN32_WINNT=0x0601)
+target_compile_definitions(PIFMSAntivirusEngine PRIVATE UNICODE _UNICODE NOMINMAX _WIN32_WINNT=0x0601)
 
 if(MSVC)
     target_compile_options(PIFMSApp PRIVATE /utf-8 /W4 /permissive-)
     target_compile_options(PIFMSService PRIVATE /utf-8 /W4 /permissive-)
+    target_compile_options(PIFMSAntivirusEngine PRIVATE /utf-8 /W4 /permissive-)
 else()
     if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
         target_compile_options(PIFMSApp PRIVATE
@@ -219,6 +234,10 @@ else()
             -fexec-charset=UTF-8
         )
         target_compile_options(PIFMSService PRIVATE
+            -finput-charset=UTF-8
+            -fexec-charset=UTF-8
+        )
+        target_compile_options(PIFMSAntivirusEngine PRIVATE
             -finput-charset=UTF-8
             -fexec-charset=UTF-8
         )
@@ -234,7 +253,13 @@ else()
         -Wextra
         -Wpedantic
     )
+    target_compile_options(PIFMSAntivirusEngine PRIVATE
+        -Wall
+        -Wextra
+        -Wpedantic
+    )
 endif()
 
-target_link_libraries(PIFMSApp PRIVATE PIFMSRpcClientStub advapi32 rpcrt4 shell32 user32)
+target_link_libraries(PIFMSApp PRIVATE PIFMSRpcClientStub advapi32 comdlg32 ole32 rpcrt4 shell32 user32)
 target_link_libraries(PIFMSService PRIVATE PIFMSRpcServerStub advapi32 crypt32 iphlpapi rpcrt4 userenv winhttp wtsapi32)
+target_link_libraries(PIFMSAntivirusEngine PRIVATE crypt32)

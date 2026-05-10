@@ -89,6 +89,35 @@ private:
     };
 }
 
+[[nodiscard]] AntivirusDatabaseInfo ConvertDatabaseInfo(const PifmsRpcAvDatabaseInfo& rpcDatabaseInfo)
+{
+    return AntivirusDatabaseInfo{
+        rpcDatabaseInfo.loaded != 0,
+        rpcDatabaseInfo.releaseUnixSeconds,
+        rpcDatabaseInfo.releaseDate,
+        rpcDatabaseInfo.recordCount
+    };
+}
+
+[[nodiscard]] std::vector<ScanResult> ConvertScanResults(const PifmsRpcScanResults& rpcResults)
+{
+    std::vector<ScanResult> results;
+    results.reserve(rpcResults.count);
+    for (unsigned long index = 0; index < rpcResults.count && index < pifms::kRpcScanResultCapacity; ++index) {
+        const PifmsRpcScanResult& item = rpcResults.items[index];
+        results.push_back(ScanResult{
+            item.path,
+            item.scanned != 0,
+            item.malicious != 0,
+            item.threatName,
+            item.objectType,
+            item.offset,
+            item.error
+        });
+    }
+    return results;
+}
+
 [[nodiscard]] long RpcExceptionToResult(RPC_STATUS status)
 {
     return status == RPC_S_OK ? pifms::rpc_result::kOk : pifms::rpc_result::kNetworkError;
@@ -216,6 +245,139 @@ private:
     return result;
 }
 
+[[nodiscard]] long CallGetAntivirusDatabaseInfo(handle_t binding, PifmsRpcAvDatabaseInfo* rpcDatabaseInfo)
+{
+    long result = pifms::rpc_result::kNetworkError;
+    RpcTryExcept
+    {
+        result = PifmsGetAntivirusDatabaseInfo(binding, rpcDatabaseInfo);
+    }
+    RpcExcept(1)
+    {
+        result = RpcExceptionToResult(RpcExceptionCode());
+    }
+    RpcEndExcept
+
+    return result;
+}
+
+[[nodiscard]] long CallScanFile(handle_t binding, wchar_t* path, PifmsRpcScanResults* rpcResults)
+{
+    long result = pifms::rpc_result::kNetworkError;
+    RpcTryExcept
+    {
+        result = PifmsScanFile(binding, path, rpcResults);
+    }
+    RpcExcept(1)
+    {
+        result = RpcExceptionToResult(RpcExceptionCode());
+    }
+    RpcEndExcept
+
+    return result;
+}
+
+[[nodiscard]] long CallScanDirectory(handle_t binding, wchar_t* path, PifmsRpcScanResults* rpcResults)
+{
+    long result = pifms::rpc_result::kNetworkError;
+    RpcTryExcept
+    {
+        result = PifmsScanDirectory(binding, path, rpcResults);
+    }
+    RpcExcept(1)
+    {
+        result = RpcExceptionToResult(RpcExceptionCode());
+    }
+    RpcEndExcept
+
+    return result;
+}
+
+[[nodiscard]] long CallScanFixedDrives(handle_t binding, PifmsRpcScanResults* rpcResults)
+{
+    long result = pifms::rpc_result::kNetworkError;
+    RpcTryExcept
+    {
+        result = PifmsScanFixedDrives(binding, rpcResults);
+    }
+    RpcExcept(1)
+    {
+        result = RpcExceptionToResult(RpcExceptionCode());
+    }
+    RpcEndExcept
+
+    return result;
+}
+
+[[nodiscard]] long CallConfigureSchedule(
+    handle_t binding,
+    long targetType,
+    wchar_t* path,
+    unsigned long intervalMinutes
+)
+{
+    long result = pifms::rpc_result::kNetworkError;
+    RpcTryExcept
+    {
+        result = PifmsConfigureSchedule(binding, targetType, path, intervalMinutes);
+    }
+    RpcExcept(1)
+    {
+        result = RpcExceptionToResult(RpcExceptionCode());
+    }
+    RpcEndExcept
+
+    return result;
+}
+
+[[nodiscard]] long CallConfigureMonitoring(handle_t binding, wchar_t* path)
+{
+    long result = pifms::rpc_result::kNetworkError;
+    RpcTryExcept
+    {
+        result = PifmsConfigureMonitoring(binding, path);
+    }
+    RpcExcept(1)
+    {
+        result = RpcExceptionToResult(RpcExceptionCode());
+    }
+    RpcEndExcept
+
+    return result;
+}
+
+[[nodiscard]] long CallGetScheduledScanResults(handle_t binding, PifmsRpcScanResults* rpcResults)
+{
+    long result = pifms::rpc_result::kNetworkError;
+    RpcTryExcept
+    {
+        result = PifmsGetScheduledScanResults(binding, rpcResults);
+    }
+    RpcExcept(1)
+    {
+        result = RpcExceptionToResult(RpcExceptionCode());
+    }
+    RpcEndExcept
+
+    return result;
+}
+
+[[nodiscard]] long CallGetMonitoringScanResults(handle_t binding, PifmsRpcScanResults* rpcResults)
+{
+    long result = pifms::rpc_result::kNetworkError;
+    RpcTryExcept
+    {
+        result = PifmsGetMonitoringScanResults(binding, rpcResults);
+    }
+    RpcExcept(1)
+    {
+        result = RpcExceptionToResult(RpcExceptionCode());
+    }
+    RpcEndExcept
+
+    return result;
+}
+
 [[nodiscard]] bool RequestServiceStop()
 {
     RpcBinding binding;
@@ -305,6 +467,113 @@ private:
     }
 
     return CallEnsureAntivirusAvailable(binding.Get());
+}
+
+[[nodiscard]] long GetAntivirusDatabaseInfo(AntivirusDatabaseInfo& databaseInfo)
+{
+    RpcBinding binding;
+    if (!binding) {
+        return pifms::rpc_result::kNetworkError;
+    }
+
+    PifmsRpcAvDatabaseInfo rpcDatabaseInfo = {};
+    const long result = CallGetAntivirusDatabaseInfo(binding.Get(), &rpcDatabaseInfo);
+    databaseInfo = ConvertDatabaseInfo(rpcDatabaseInfo);
+    return result;
+}
+
+[[nodiscard]] long ScanFile(const std::wstring& path, std::vector<ScanResult>& results)
+{
+    RpcBinding binding;
+    if (!binding) {
+        return pifms::rpc_result::kNetworkError;
+    }
+
+    PifmsRpcScanResults rpcResults = {};
+    const long result = CallScanFile(binding.Get(), const_cast<wchar_t*>(path.c_str()), &rpcResults);
+    results = ConvertScanResults(rpcResults);
+    return result;
+}
+
+[[nodiscard]] long ScanDirectory(const std::wstring& path, std::vector<ScanResult>& results)
+{
+    RpcBinding binding;
+    if (!binding) {
+        return pifms::rpc_result::kNetworkError;
+    }
+
+    PifmsRpcScanResults rpcResults = {};
+    const long result = CallScanDirectory(binding.Get(), const_cast<wchar_t*>(path.c_str()), &rpcResults);
+    results = ConvertScanResults(rpcResults);
+    return result;
+}
+
+[[nodiscard]] long ScanFixedDrives(std::vector<ScanResult>& results)
+{
+    RpcBinding binding;
+    if (!binding) {
+        return pifms::rpc_result::kNetworkError;
+    }
+
+    PifmsRpcScanResults rpcResults = {};
+    const long result = CallScanFixedDrives(binding.Get(), &rpcResults);
+    results = ConvertScanResults(rpcResults);
+    return result;
+}
+
+[[nodiscard]] long ConfigureSchedule(
+    ScanTargetType targetType,
+    const std::wstring& path,
+    std::uint32_t intervalMinutes
+)
+{
+    RpcBinding binding;
+    if (!binding) {
+        return pifms::rpc_result::kNetworkError;
+    }
+
+    return CallConfigureSchedule(
+        binding.Get(),
+        static_cast<long>(targetType),
+        const_cast<wchar_t*>(path.c_str()),
+        intervalMinutes
+    );
+}
+
+[[nodiscard]] long ConfigureMonitoring(const std::wstring& path)
+{
+    RpcBinding binding;
+    if (!binding) {
+        return pifms::rpc_result::kNetworkError;
+    }
+
+    return CallConfigureMonitoring(binding.Get(), const_cast<wchar_t*>(path.c_str()));
+}
+
+[[nodiscard]] long GetScheduledScanResults(std::vector<ScanResult>& results)
+{
+    RpcBinding binding;
+    if (!binding) {
+        return pifms::rpc_result::kNetworkError;
+    }
+
+    PifmsRpcScanResults rpcResults = {};
+    const long result = CallGetScheduledScanResults(binding.Get(), &rpcResults);
+    results = ConvertScanResults(rpcResults);
+    return result;
+}
+
+[[nodiscard]] long GetMonitoringScanResults(std::vector<ScanResult>& results)
+{
+    RpcBinding binding;
+    if (!binding) {
+        return pifms::rpc_result::kNetworkError;
+    }
+
+    PifmsRpcScanResults rpcResults = {};
+    const long result = CallGetMonitoringScanResults(binding.Get(), &rpcResults);
+    results = ConvertScanResults(rpcResults);
+    return result;
 }
 
 [[nodiscard]] std::wstring RpcResultMessage(long result)

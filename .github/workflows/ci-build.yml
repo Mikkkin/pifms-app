@@ -19,9 +19,13 @@ jobs:
           cmake -S . -B build -A ARM64
           cmake --build build --config Release
 
+      - name: Check antivirus engine with test file
+        run: .\build\PIFMSAntivirusEngine.exe
+
       - uses: actions/upload-artifact@v4
         with:
           name: PIFMS
           path: |
             build/PIFMSApp.exe
             build/PIFMSService.exe
+            build/PIFMSAntivirusEngine.exe

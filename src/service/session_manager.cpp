@@ -192,6 +192,34 @@ SessionManager::~SessionManager()
     return license.active ? rpc_result::kOk : rpc_result::kNoLicense;
 }
 
+[[nodiscard]] long SessionManager::DownloadSignatureDatabase(std::vector<std::uint8_t>& packageData)
+{
+    std::string accessToken;
+    {
+        CriticalSectionLock lock(lock_);
+        if (accessToken_.empty()) {
+            return rpc_result::kAuthenticationRequired;
+        }
+        accessToken = accessToken_;
+    }
+
+    HttpResponse response = api_.DownloadSignatureDatabase(accessToken);
+    if (response.transportOk && response.statusCode == 401 && RefreshTokens() == rpc_result::kOk) {
+        {
+            CriticalSectionLock lock(lock_);
+            accessToken = accessToken_;
+        }
+        response = api_.DownloadSignatureDatabase(accessToken);
+    }
+
+    if (!IsHttpSuccess(response)) {
+        return MapHttpFailure(response, rpc_result::kInvalidServerResponse);
+    }
+
+    packageData.assign(response.body.begin(), response.body.end());
+    return packageData.empty() ? rpc_result::kInvalidServerResponse : rpc_result::kOk;
+}
+
 [[nodiscard]] long SessionManager::RefreshTokens()
 {
     std::string refreshToken;
