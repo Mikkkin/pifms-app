@@ -1,13 +1,18 @@
 #include <windows.h>
+#include <commdlg.h>
 #include <shellapi.h>
+#include <shlobj.h>
 #include <strsafe.h>
 
 #include "common/constants.h"
 #include "gui/rpc_client.h"
 #include "gui/service_guard.h"
 
+#include <algorithm>
+#include <cstdlib>
 #include <string_view>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -20,7 +25,11 @@ constexpr UINT kFileExit = 2001;
 constexpr UINT kLogin = 3001;
 constexpr UINT kLogout = 3002;
 constexpr UINT kActivate = 3003;
-constexpr UINT kScan = 3004;
+constexpr UINT kScanFile = 3004;
+constexpr UINT kScanDirectory = 3005;
+constexpr UINT kScanDrives = 3006;
+constexpr UINT kConfigureSchedule = 3007;
+constexpr UINT kConfigureMonitoring = 3008;
 } 
 
 namespace Text {
@@ -44,7 +53,15 @@ constexpr wchar_t kLicensePrefix[] = L"Лицензия действительн
 constexpr wchar_t kNoLicense[] = L"Лицензия отсутствует";
 constexpr wchar_t kAntivirusLocked[] = L"Функциональность антивируса заблокирована";
 constexpr wchar_t kAntivirusReady[] = L"Функциональность антивируса доступна";
-constexpr wchar_t kScan[] = L"Проверить систему";
+constexpr wchar_t kDatabasePrefix[] = L"Базы: ";
+constexpr wchar_t kDatabaseNotLoaded[] = L"Базы: не загружены";
+constexpr wchar_t kScanFile[] = L"Проверить файл";
+constexpr wchar_t kScanDirectory[] = L"Проверить папку";
+constexpr wchar_t kScanDrives[] = L"Проверить диски";
+constexpr wchar_t kSchedule[] = L"Расписание";
+constexpr wchar_t kMonitor[] = L"Мониторинг";
+constexpr wchar_t kInterval[] = L"Интервал, мин";
+constexpr wchar_t kResults[] = L"Результаты";
 } 
 
 [[nodiscard]] bool IsServiceChildMode(std::wstring_view commandLine)
@@ -55,15 +72,26 @@ constexpr wchar_t kScan[] = L"Проверить систему";
 struct AppState {
     HINSTANCE instance = nullptr;
     HWND window = nullptr;
+    HFONT uiFont = nullptr;
     NOTIFYICONDATAW trayIcon = {};
     UINT taskbarCreatedMessage = 0;
     pifms::gui::UserInfo user;
     pifms::gui::LicenseInfo license;
+    pifms::gui::AntivirusDatabaseInfo database;
     bool hasLicense = false;
     HWND userLabel = nullptr;
     HWND licenseLabel = nullptr;
     HWND antivirusStatusLabel = nullptr;
-    HWND scanButton = nullptr;
+    HWND databaseLabel = nullptr;
+    HWND scanFileButton = nullptr;
+    HWND scanDirectoryButton = nullptr;
+    HWND scanDrivesButton = nullptr;
+    HWND scheduleButton = nullptr;
+    HWND monitorButton = nullptr;
+    HWND intervalLabel = nullptr;
+    HWND intervalEdit = nullptr;
+    HWND resultsTitleLabel = nullptr;
+    HWND resultsEdit = nullptr;
     HWND loginTitleLabel = nullptr;
     HWND usernameLabel = nullptr;
     HWND usernameEdit = nullptr;
@@ -174,9 +202,17 @@ void SetErrorMessage(const std::wstring& message)
     SetControlText(g_app.errorLabel, message);
 }
 
+HWND ApplyControlFont(HWND control)
+{
+    if (control != nullptr && g_app.uiFont != nullptr) {
+        SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(g_app.uiFont), TRUE);
+    }
+    return control;
+}
+
 [[nodiscard]] HWND CreateStatic(HWND parent, const wchar_t* text, int x, int y, int width, int height)
 {
-    return CreateWindowW(
+    return ApplyControlFont(CreateWindowW(
         L"STATIC",
         text,
         WS_VISIBLE | WS_CHILD | SS_LEFT,
@@ -188,12 +224,12 @@ void SetErrorMessage(const std::wstring& message)
         nullptr,
         g_app.instance,
         nullptr
-    );
+    ));
 }
 
 [[nodiscard]] HWND CreateEdit(HWND parent, int x, int y, int width, int height, bool password)
 {
-    return CreateWindowW(
+    return ApplyControlFont(CreateWindowW(
         L"EDIT",
         L"",
         WS_VISIBLE | WS_CHILD | WS_BORDER | ES_AUTOHSCROLL | (password ? ES_PASSWORD : 0),
@@ -205,12 +241,29 @@ void SetErrorMessage(const std::wstring& message)
         nullptr,
         g_app.instance,
         nullptr
-    );
+    ));
+}
+
+[[nodiscard]] HWND CreateResultsEdit(HWND parent, int x, int y, int width, int height)
+{
+    return ApplyControlFont(CreateWindowW(
+        L"EDIT",
+        L"",
+        WS_VISIBLE | WS_CHILD | WS_BORDER | ES_MULTILINE | ES_READONLY | WS_VSCROLL | ES_AUTOVSCROLL,
+        x,
+        y,
+        width,
+        height,
+        parent,
+        nullptr,
+        g_app.instance,
+        nullptr
+    ));
 }
 
 [[nodiscard]] HWND CreateButton(HWND parent, const wchar_t* text, UINT commandId, int x, int y, int width, int height)
 {
-    return CreateWindowW(
+    return ApplyControlFont(CreateWindowW(
         L"BUTTON",
         text,
         WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
@@ -222,7 +275,89 @@ void SetErrorMessage(const std::wstring& message)
         reinterpret_cast<HMENU>(static_cast<UINT_PTR>(commandId)),
         g_app.instance,
         nullptr
-    );
+    ));
+}
+
+[[nodiscard]] std::wstring ChooseFile()
+{
+    wchar_t path[MAX_PATH] = {};
+    OPENFILENAMEW dialog = {};
+    dialog.lStructSize = sizeof(dialog);
+    dialog.hwndOwner = g_app.window;
+    dialog.lpstrFile = path;
+    dialog.nMaxFile = ARRAYSIZE(path);
+    dialog.lpstrFilter = L"Все файлы\0*.*\0";
+    dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+    return GetOpenFileNameW(&dialog) ? std::wstring(path) : std::wstring();
+}
+
+[[nodiscard]] std::wstring ChooseFolder()
+{
+    BROWSEINFOW browse = {};
+    browse.hwndOwner = g_app.window;
+    browse.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
+
+    PIDLIST_ABSOLUTE item = SHBrowseForFolderW(&browse);
+    if (item == nullptr) {
+        return {};
+    }
+
+    wchar_t path[MAX_PATH] = {};
+    const BOOL ok = SHGetPathFromIDListW(item, path);
+    CoTaskMemFree(item);
+    return ok ? std::wstring(path) : std::wstring();
+}
+
+[[nodiscard]] std::wstring FormatScanResults(const std::vector<pifms::gui::ScanResult>& results)
+{
+    if (results.empty()) {
+        return L"Нет результатов";
+    }
+
+    std::wstring text;
+    for (const pifms::gui::ScanResult& result : results) {
+        text += result.malicious ? L"[DETECT] " : L"[OK] ";
+        text += result.path;
+        if (!result.error.empty()) {
+            text += L" - ";
+            text += result.error;
+        } else if (result.malicious) {
+            text += L" - ";
+            text += result.threatName.empty() ? L"Вредоносный объект" : result.threatName;
+        }
+        text += L"\r\n";
+    }
+    return text;
+}
+
+void ShowScanResults(const std::vector<pifms::gui::ScanResult>& results)
+{
+    SetControlText(g_app.resultsEdit, FormatScanResults(results));
+}
+
+void RefreshDatabaseInfo()
+{
+    if (!g_app.user.authenticated || !g_app.hasLicense) {
+        g_app.database = {};
+        SetControlText(g_app.databaseLabel, Text::kDatabaseNotLoaded);
+        return;
+    }
+
+    pifms::gui::AntivirusDatabaseInfo database;
+    const long result = pifms::gui::GetAntivirusDatabaseInfo(database);
+    if (result == pifms::rpc_result::kOk && database.loaded) {
+        g_app.database = database;
+        SetControlText(
+            g_app.databaseLabel,
+            std::wstring(Text::kDatabasePrefix) + database.releaseDate + L", записей: " +
+                std::to_wstring(database.recordCount)
+        );
+    } else {
+        SetControlText(g_app.databaseLabel, Text::kDatabaseNotLoaded);
+        if (result != pifms::rpc_result::kOk) {
+            SetErrorMessage(pifms::gui::RpcResultMessage(result));
+        }
+    }
 }
 
 void RenderScreen()
@@ -247,7 +382,12 @@ void RenderScreen()
         g_app.antivirusStatusLabel,
         licenseActive ? Text::kAntivirusReady : Text::kAntivirusLocked
     );
-    EnableWindow(g_app.scanButton, licenseActive ? TRUE : FALSE);
+    EnableWindow(g_app.scanFileButton, licenseActive ? TRUE : FALSE);
+    EnableWindow(g_app.scanDirectoryButton, licenseActive ? TRUE : FALSE);
+    EnableWindow(g_app.scanDrivesButton, licenseActive ? TRUE : FALSE);
+    EnableWindow(g_app.scheduleButton, licenseActive ? TRUE : FALSE);
+    EnableWindow(g_app.monitorButton, licenseActive ? TRUE : FALSE);
+    EnableWindow(g_app.intervalEdit, licenseActive ? TRUE : FALSE);
 
     SetControlVisible(g_app.loginTitleLabel, showLoginForm);
     SetControlVisible(g_app.usernameLabel, showLoginForm);
@@ -272,7 +412,9 @@ void RefreshLicenseState(bool showErrors)
     if (!g_app.user.authenticated) {
         g_app.hasLicense = false;
         g_app.license = {};
+        g_app.database = {};
         RenderScreen();
+        RefreshDatabaseInfo();
         return;
     }
 
@@ -293,6 +435,7 @@ void RefreshLicenseState(bool showErrors)
     }
 
     RenderScreen();
+    RefreshDatabaseInfo();
 }
 
 void RefreshUserState()
@@ -302,14 +445,17 @@ void RefreshUserState()
     if (result != pifms::rpc_result::kOk) {
         g_app.user = {};
         g_app.hasLicense = false;
+        g_app.database = {};
         SetErrorMessage(pifms::gui::RpcResultMessage(result));
         RenderScreen();
+        RefreshDatabaseInfo();
         return;
     }
 
     g_app.user = user;
     SetErrorMessage(L"");
     RenderScreen();
+    RefreshDatabaseInfo();
 
     if (g_app.user.authenticated) {
         RefreshLicenseState(false);
@@ -350,9 +496,11 @@ void HandleLogout()
     static_cast<void>(pifms::gui::Logout());
     g_app.user = {};
     g_app.license = {};
+    g_app.database = {};
     g_app.hasLicense = false;
     SetErrorMessage(L"");
     RenderScreen();
+    RefreshDatabaseInfo();
 }
 
 void HandleActivation()
@@ -379,6 +527,7 @@ void HandleActivation()
     SetWindowTextW(g_app.activationCodeEdit, L"");
     SetErrorMessage(L"");
     RenderScreen();
+    RefreshDatabaseInfo();
 }
 
 void ExitApplication()
@@ -431,6 +580,87 @@ void ShowTrayContextMenu()
     DestroyMenu(menu);
 }
 
+void RunScan(long result, const std::vector<pifms::gui::ScanResult>& scanResults)
+{
+    if (result == pifms::rpc_result::kOk) {
+        SetErrorMessage(L"");
+        ShowScanResults(scanResults);
+        RefreshDatabaseInfo();
+        return;
+    }
+
+    SetErrorMessage(pifms::gui::RpcResultMessage(result));
+    ShowScanResults({});
+    RefreshLicenseState(false);
+}
+
+void HandleScanFile()
+{
+    const std::wstring path = ChooseFile();
+    if (path.empty()) {
+        return;
+    }
+
+    SetControlText(g_app.resultsEdit, L"");
+    std::vector<pifms::gui::ScanResult> results;
+    RunScan(pifms::gui::ScanFile(path, results), results);
+}
+
+void HandleScanDirectory()
+{
+    const std::wstring path = ChooseFolder();
+    if (path.empty()) {
+        return;
+    }
+
+    SetControlText(g_app.resultsEdit, L"");
+    std::vector<pifms::gui::ScanResult> results;
+    RunScan(pifms::gui::ScanDirectory(path, results), results);
+}
+
+void HandleScanDrives()
+{
+    SetControlText(g_app.resultsEdit, L"");
+    std::vector<pifms::gui::ScanResult> results;
+    RunScan(pifms::gui::ScanFixedDrives(results), results);
+}
+
+void HandleSchedule()
+{
+    const std::wstring path = ChooseFolder();
+    if (path.empty()) {
+        return;
+    }
+
+    const std::wstring intervalText = GetWindowTextValue(g_app.intervalEdit);
+    const std::uint32_t interval = static_cast<std::uint32_t>((std::max)(1, _wtoi(intervalText.c_str())));
+    const long result = pifms::gui::ConfigureSchedule(pifms::gui::ScanTargetType::Directory, path, interval);
+    SetErrorMessage(result == pifms::rpc_result::kOk ? L"Сканирование по расписанию настроено" : pifms::gui::RpcResultMessage(result));
+}
+
+void HandleMonitoring()
+{
+    const std::wstring path = ChooseFolder();
+    if (path.empty()) {
+        return;
+    }
+
+    const long result = pifms::gui::ConfigureMonitoring(path);
+    SetErrorMessage(result == pifms::rpc_result::kOk ? L"Мониторинг директории настроен" : pifms::gui::RpcResultMessage(result));
+}
+
+void RefreshBackgroundResults()
+{
+    std::vector<pifms::gui::ScanResult> results;
+    if (pifms::gui::GetMonitoringScanResults(results) == pifms::rpc_result::kOk && !results.empty()) {
+        ShowScanResults(results);
+        return;
+    }
+    if (pifms::gui::GetScheduledScanResults(results) == pifms::rpc_result::kOk && !results.empty()) {
+        ShowScanResults(results);
+    }
+}
+
 [[nodiscard]] HMENU CreateMainMenuBar()
 {
     HMENU menuBar = CreateMenu();
@@ -461,31 +691,50 @@ void ShowTrayContextMenu()
 
 [[nodiscard]] bool CreateMainWindowContent(HWND hwnd)
 {
-    g_app.userLabel = CreateStatic(hwnd, Text::kNoUser, 20, 20, 520, 24);
-    g_app.logoutButton = CreateButton(hwnd, Text::kLogout, CommandId::kLogout, 640, 18, 120, 28);
-    g_app.licenseLabel = CreateStatic(hwnd, Text::kNoLicense, 20, 52, 740, 24);
-    g_app.antivirusStatusLabel = CreateStatic(hwnd, Text::kAntivirusLocked, 20, 92, 420, 24);
-    g_app.scanButton = CreateButton(hwnd, Text::kScan, CommandId::kScan, 20, 124, 240, 34);
+    g_app.userLabel = CreateStatic(hwnd, Text::kNoUser, 20, 20, 680, 24);
+    g_app.logoutButton = CreateButton(hwnd, Text::kLogout, CommandId::kLogout, 790, 18, 120, 30);
+    g_app.licenseLabel = CreateStatic(hwnd, Text::kNoLicense, 20, 52, 890, 24);
+    g_app.antivirusStatusLabel = CreateStatic(hwnd, Text::kAntivirusLocked, 20, 92, 620, 24);
+    g_app.databaseLabel = CreateStatic(hwnd, Text::kDatabaseNotLoaded, 20, 120, 890, 24);
+    g_app.scanFileButton = CreateButton(hwnd, Text::kScanFile, CommandId::kScanFile, 20, 152, 170, 34);
+    g_app.scanDirectoryButton = CreateButton(hwnd, Text::kScanDirectory, CommandId::kScanDirectory, 200, 152, 170, 34);
+    g_app.scanDrivesButton = CreateButton(hwnd, Text::kScanDrives, CommandId::kScanDrives, 380, 152, 170, 34);
+    g_app.scheduleButton = CreateButton(hwnd, Text::kSchedule, CommandId::kConfigureSchedule, 560, 152, 150, 34);
+    g_app.monitorButton = CreateButton(hwnd, Text::kMonitor, CommandId::kConfigureMonitoring, 720, 152, 190, 34);
+    g_app.intervalLabel = CreateStatic(hwnd, Text::kInterval, 20, 196, 120, 24);
+    g_app.intervalEdit = CreateEdit(hwnd, 150, 192, 80, 28, false);
+    g_app.resultsTitleLabel = CreateStatic(hwnd, Text::kResults, 20, 232, 120, 24);
+    g_app.resultsEdit = CreateResultsEdit(hwnd, 20, 260, 890, 170);
 
-    g_app.loginTitleLabel = CreateStatic(hwnd, Text::kLoginTitle, 20, 180, 240, 24);
-    g_app.usernameLabel = CreateStatic(hwnd, Text::kUsername, 20, 216, 120, 24);
-    g_app.usernameEdit = CreateEdit(hwnd, 150, 212, 260, 28, false);
-    g_app.passwordLabel = CreateStatic(hwnd, Text::kPassword, 20, 252, 120, 24);
-    g_app.passwordEdit = CreateEdit(hwnd, 150, 248, 260, 28, true);
-    g_app.loginButton = CreateButton(hwnd, Text::kLogin, CommandId::kLogin, 150, 292, 120, 32);
+    g_app.loginTitleLabel = CreateStatic(hwnd, Text::kLoginTitle, 20, 450, 240, 24);
+    g_app.usernameLabel = CreateStatic(hwnd, Text::kUsername, 20, 486, 120, 24);
+    g_app.usernameEdit = CreateEdit(hwnd, 150, 482, 260, 28, false);
+    g_app.passwordLabel = CreateStatic(hwnd, Text::kPassword, 20, 522, 120, 24);
+    g_app.passwordEdit = CreateEdit(hwnd, 150, 518, 260, 28, true);
+    g_app.loginButton = CreateButton(hwnd, Text::kLogin, CommandId::kLogin, 150, 562, 120, 32);
 
-    g_app.activationTitleLabel = CreateStatic(hwnd, Text::kActivationTitle, 20, 180, 260, 24);
-    g_app.activationCodeLabel = CreateStatic(hwnd, Text::kActivationCode, 20, 216, 120, 24);
-    g_app.activationCodeEdit = CreateEdit(hwnd, 150, 212, 320, 28, false);
-    g_app.activateButton = CreateButton(hwnd, Text::kActivate, CommandId::kActivate, 150, 252, 140, 32);
+    g_app.activationTitleLabel = CreateStatic(hwnd, Text::kActivationTitle, 20, 450, 260, 24);
+    g_app.activationCodeLabel = CreateStatic(hwnd, Text::kActivationCode, 20, 486, 120, 24);
+    g_app.activationCodeEdit = CreateEdit(hwnd, 150, 482, 320, 28, false);
+    g_app.activateButton = CreateButton(hwnd, Text::kActivate, CommandId::kActivate, 150, 522, 140, 32);
 
-    g_app.errorLabel = CreateStatic(hwnd, L"", 20, 340, 740, 48);
+    g_app.errorLabel = CreateStatic(hwnd, L"", 20, 610, 890, 48);
+    SetWindowTextW(g_app.intervalEdit, L"1");
 
     return g_app.userLabel != nullptr &&
            g_app.logoutButton != nullptr &&
            g_app.licenseLabel != nullptr &&
            g_app.antivirusStatusLabel != nullptr &&
-           g_app.scanButton != nullptr &&
+           g_app.databaseLabel != nullptr &&
+           g_app.scanFileButton != nullptr &&
+           g_app.scanDirectoryButton != nullptr &&
+           g_app.scanDrivesButton != nullptr &&
+           g_app.scheduleButton != nullptr &&
+           g_app.monitorButton != nullptr &&
+           g_app.intervalLabel != nullptr &&
+           g_app.intervalEdit != nullptr &&
+           g_app.resultsTitleLabel != nullptr &&
+           g_app.resultsEdit != nullptr &&
            g_app.loginTitleLabel != nullptr &&
            g_app.usernameLabel != nullptr &&
            g_app.usernameEdit != nullptr &&
@@ -524,13 +773,24 @@ void HandleCommand(WPARAM wParam)
         HandleActivation();
         break;
 
-    case CommandId::kScan:
-        if (pifms::gui::EnsureAntivirusAvailable() == pifms::rpc_result::kOk) {
-            MessageBoxW(g_app.window, L"Проверка доступна при активной лицензии", Text::kWindowTitle, MB_OK);
-        } else {
-            SetErrorMessage(pifms::gui::RpcResultMessage(pifms::rpc_result::kNoLicense));
-            RefreshLicenseState(false);
-        }
+    case CommandId::kScanFile:
+        HandleScanFile();
+        break;
+
+    case CommandId::kScanDirectory:
+        HandleScanDirectory();
+        break;
+
+    case CommandId::kScanDrives:
+        HandleScanDrives();
+        break;
+
+    case CommandId::kConfigureSchedule:
+        HandleSchedule();
+        break;
+
+    case CommandId::kConfigureMonitoring:
+        HandleMonitoring();
         break;
 
     default:
@@ -569,6 +829,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
 
     case WM_TIMER:
         RefreshLicenseState(false);
+        RefreshBackgroundResults();
         return 0;
 
     case WM_CLOSE:
@@ -621,8 +882,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         WS_OVERLAPPEDWINDOW,
         CW_USEDEFAULT,
         CW_USEDEFAULT,
-        800,
-        600,
+        950,
+        720,
         nullptr,
         menuBar,
         g_app.instance,
@@ -673,8 +934,32 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR commandLine, int)
 
     g_app.instance = instance;
     g_app.taskbarCreatedMessage = RegisterWindowMessageW(L"TaskbarCreated");
+    g_app.uiFont = CreateFontW(
+        -16,
+        0,
+        0,
+        0,
+        FW_NORMAL,
+        FALSE,
+        FALSE,
+        FALSE,
+        DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS,
+        CLIP_DEFAULT_PRECIS,
+        DEFAULT_QUALITY,
+        DEFAULT_PITCH | FF_DONTCARE,
+        L"Segoe UI"
+    );
+    const HRESULT comResult = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
     if (!RegisterMainWindowClass() || !CreateMainWindow()) {
+        if (g_app.uiFont != nullptr) {
+            DeleteObject(g_app.uiFont);
+            g_app.uiFont = nullptr;
+        }
+        if (SUCCEEDED(comResult)) {
+            CoUninitialize();
+        }
         return 1;
     }
 
@@ -683,8 +968,23 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR commandLine, int)
     }
 
     if (!AddTrayIcon(g_app.window)) {
+        if (g_app.uiFont != nullptr) {
+            DeleteObject(g_app.uiFont);
+            g_app.uiFont = nullptr;
+        }
+        if (SUCCEEDED(comResult)) {
+            CoUninitialize();
+        }
         return 1;
     }
 
-    return RunMessageLoop();
+    const int result = RunMessageLoop();
+    if (g_app.uiFont != nullptr) {
+        DeleteObject(g_app.uiFont);
+        g_app.uiFont = nullptr;
+    }
+    if (SUCCEEDED(comResult)) {
+        CoUninitialize();
+    }
+    return result;
 }

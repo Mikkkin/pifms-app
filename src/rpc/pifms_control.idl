@@ -17,6 +17,28 @@ interface PIFMSControl
         wchar_t expirationDate[64];
     } PifmsRpcLicenseInfo;
 
+    typedef struct PifmsRpcAvDatabaseInfo {
+        long loaded;
+        hyper releaseUnixSeconds;
+        wchar_t releaseDate[64];
+        unsigned long recordCount;
+    } PifmsRpcAvDatabaseInfo;
+
+    typedef struct PifmsRpcScanResult {
+        wchar_t path[512];
+        long scanned;
+        long malicious;
+        wchar_t threatName[128];
+        long objectType;
+        unsigned hyper offset;
+        wchar_t error[256];
+    } PifmsRpcScanResult;
+
+    typedef struct PifmsRpcScanResults {
+        unsigned long count;
+        PifmsRpcScanResult items[32];
+    } PifmsRpcScanResults;
+
     void PifmsStopService([in] handle_t binding);
     long PifmsGetCurrentUser([in] handle_t binding, [out] PifmsRpcUserInfo* userInfo);
     long PifmsLogin(
@@ -33,4 +55,28 @@ interface PIFMSControl
         [out] PifmsRpcLicenseInfo* licenseInfo
     );
     long PifmsEnsureAntivirusAvailable([in] handle_t binding);
+    long PifmsGetAntivirusDatabaseInfo([in] handle_t binding, [out] PifmsRpcAvDatabaseInfo* databaseInfo);
+    long PifmsScanFile(
+        [in] handle_t binding,
+        [in, string] wchar_t* path,
+        [out] PifmsRpcScanResults* results
+    );
+    long PifmsScanDirectory(
+        [in] handle_t binding,
+        [in, string] wchar_t* path,
+        [out] PifmsRpcScanResults* results
+    );
+    long PifmsScanFixedDrives([in] handle_t binding, [out] PifmsRpcScanResults* results);
+    long PifmsConfigureSchedule(
+        [in] handle_t binding,
+        [in] long targetType,
+        [in, string] wchar_t* path,
+        [in] unsigned long intervalMinutes
+    );
+    long PifmsConfigureMonitoring(
+        [in] handle_t binding,
+        [in, string] wchar_t* path
+    );
+    long PifmsGetScheduledScanResults([in] handle_t binding, [out] PifmsRpcScanResults* results);
+    long PifmsGetMonitoringScanResults([in] handle_t binding, [out] PifmsRpcScanResults* results);
 }

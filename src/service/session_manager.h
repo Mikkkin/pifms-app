@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace pifms::service {
 
@@ -35,6 +36,7 @@ public:
     [[nodiscard]] long Logout();
     [[nodiscard]] long GetLicenseInfo(LicenseSnapshot& license);
     [[nodiscard]] long ActivateProduct(const std::wstring& activationCode, LicenseSnapshot& license);
+    [[nodiscard]] long DownloadSignatureDatabase(std::vector<std::uint8_t>& packageData);
 
 private:
     struct ParsedTicket {

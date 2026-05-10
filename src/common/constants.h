@@ -10,6 +10,7 @@ inline constexpr wchar_t kServiceChildArg[] = L"--service-child";
 inline constexpr wchar_t kSilentArg[] = L"--silent";
 inline constexpr wchar_t kDefaultApiBaseUrl[] = L"https://localhost:8443";
 inline constexpr wchar_t kDefaultProductId[] = L"00000000-0000-0000-0000-000000000000";
+inline constexpr unsigned long kRpcScanResultCapacity = 32;
 
 namespace rpc_result {
 inline constexpr long kOk = 0;

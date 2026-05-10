@@ -162,10 +162,34 @@ ApiClient::ApiClient()
     return PostJson(L"/api/licenses/activate", body, accessToken);
 }
 
+[[nodiscard]] HttpResponse ApiClient::DownloadSignatureDatabase(const std::string& accessToken) const
+{
+    return SendRequest(
+        L"GET",
+        L"/api/binary/signatures/full/raw",
+        {},
+        accessToken,
+        "application/octet-stream",
+        {}
+    );
+}
+
 [[nodiscard]] HttpResponse ApiClient::PostJson(
     const wchar_t* path,
     const std::string& body,
     const std::string& bearerToken,
+    const std::string& extraHeaders
+) const
+{
+    return SendRequest(L"POST", path, body, bearerToken, "application/json", extraHeaders);
+}
+
+[[nodiscard]] HttpResponse ApiClient::SendRequest(
+    const wchar_t* method,
+    const wchar_t* path,
+    const std::string& body,
+    const std::string& bearerToken,
+    const std::string& acceptHeader,
     const std::string& extraHeaders
 ) const
 {
@@ -190,7 +214,7 @@ ApiClient::ApiClient()
     const std::wstring requestPath = JoinPath(basePath_, path);
     InternetHandle request(WinHttpOpenRequest(
         connection.Get(),
-        L"POST",
+        method,
         requestPath.c_str(),
         nullptr,
         WINHTTP_NO_REFERER,
@@ -210,7 +234,13 @@ ApiClient::ApiClient()
         WinHttpSetOption(request.Get(), WINHTTP_OPTION_SECURITY_FLAGS, &flags, sizeof(flags));
     }
 
-    std::string headers = "Content-Type: application/json\r\nAccept: application/json\r\n";
+    std::string headers;
+    if (!body.empty()) {
+        headers += "Content-Type: application/json\r\n";
+    }
+    if (!acceptHeader.empty()) {
+        headers += "Accept: " + acceptHeader + "\r\n";
+    }
     headers += extraHeaders;
     if (!bearerToken.empty()) {
         headers += "Authorization: Bearer " + bearerToken + "\r\n";
@@ -221,7 +251,7 @@ ApiClient::ApiClient()
         request.Get(),
         wideHeaders.c_str(),
         static_cast<DWORD>(wideHeaders.size()),
-        const_cast<char*>(body.data()),
+        body.empty() ? WINHTTP_NO_REQUEST_DATA : const_cast<char*>(body.data()),
         static_cast<DWORD>(body.size()),
         static_cast<DWORD>(body.size()),
         0

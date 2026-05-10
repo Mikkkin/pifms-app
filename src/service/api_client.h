@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace pifms::service {
 
@@ -29,6 +30,7 @@ public:
         const std::string& accessToken,
         const std::string& activationCode
     ) const;
+    [[nodiscard]] HttpResponse DownloadSignatureDatabase(const std::string& accessToken) const;
 
 private:
     [[nodiscard]] HttpResponse PostJson(
@@ -36,6 +38,14 @@ private:
         const std::string& body,
         const std::string& bearerToken = {},
         const std::string& extraHeaders = {}
+    ) const;
+    [[nodiscard]] HttpResponse SendRequest(
+        const wchar_t* method,
+        const wchar_t* path,
+        const std::string& body,
+        const std::string& bearerToken,
+        const std::string& acceptHeader,
+        const std::string& extraHeaders
     ) const;
 
     std::wstring host_;

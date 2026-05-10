@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "rpc/pifms_control_api.h"
+#include "service/antivirus_service.h"
 #include "service/session_manager.h"
 
 namespace {
@@ -123,6 +124,12 @@ pifms::service::SessionManager& GetSessionManager()
 {
     static pifms::service::SessionManager manager;
     return manager;
+}
+
+pifms::service::AntivirusService& GetAntivirusService()
+{
+    static pifms::service::AntivirusService antivirusService;
+    return antivirusService;
 }
 
 void SetServiceStatusState(DWORD state, DWORD win32ExitCode = NO_ERROR)
@@ -560,6 +567,65 @@ void FillRpcLicenseInfo(const pifms::service::LicenseSnapshot& source, PifmsRpcL
     CopyRpcString(destination->expirationDate, ARRAYSIZE(destination->expirationDate), source.expirationDate);
 }
 
+void FillRpcDatabaseInfo(const pifms::service::AntivirusDatabaseInfo& source, PifmsRpcAvDatabaseInfo* destination)
+{
+    if (destination == nullptr) {
+        return;
+    }
+
+    destination->loaded = source.loaded ? 1 : 0;
+    destination->releaseUnixSeconds = source.releaseUnixSeconds;
+    destination->recordCount = source.recordCount;
+    CopyRpcString(destination->releaseDate, ARRAYSIZE(destination->releaseDate), source.releaseDate);
+}
+
+void FillRpcScanResults(const std::vector<pifms::service::ScanResult>& source, PifmsRpcScanResults* destination)
+{
+    if (destination == nullptr) {
+        return;
+    }
+
+    destination->count = static_cast<unsigned long>((std::min<size_t>)(source.size(), ARRAYSIZE(destination->items)));
+    for (unsigned long index = 0; index < destination->count; ++index) {
+        const pifms::service::ScanResult& item = source[index];
+        PifmsRpcScanResult& target = destination->items[index];
+        CopyRpcString(target.path, ARRAYSIZE(target.path), item.path);
+        target.scanned = item.scanned ? 1 : 0;
+        target.malicious = item.malicious ? 1 : 0;
+        CopyRpcString(target.threatName, ARRAYSIZE(target.threatName), item.threatName);
+        target.objectType = static_cast<long>(item.objectType);
+        target.offset = item.offset;
+        CopyRpcString(target.error, ARRAYSIZE(target.error), item.error);
+    }
+}
+
+pifms::service::ScanTargetType RpcTargetType(long targetType)
+{
+    switch (targetType) {
+    case 1:
+        return pifms::service::ScanTargetType::File;
+    case 2:
+        return pifms::service::ScanTargetType::Directory;
+    case 3:
+        return pifms::service::ScanTargetType::FixedDrives;
+    default:
+        return pifms::service::ScanTargetType::Directory;
+    }
+}
+
+long EnsureAntivirusReady()
+{
+    pifms::service::LicenseSnapshot snapshot;
+    const long result = GetSessionManager().GetLicenseInfo(snapshot);
+    if (result != pifms::rpc_result::kOk) {
+        return result;
+    }
+    if (!snapshot.active) {
+        return pifms::rpc_result::kNoLicense;
+    }
+    return GetAntivirusService().EnsureLoaded(GetSessionManager());
+}
+
 int InstallService()
 {
     const std::wstring directory = GetExecutableDirectory();
@@ -723,18 +789,135 @@ extern "C" long PifmsActivateProduct(handle_t, wchar_t* activationCode, PifmsRpc
     pifms::service::LicenseSnapshot snapshot;
     const long result = GetSessionManager().ActivateProduct(activationCode, snapshot);
     FillRpcLicenseInfo(snapshot, licenseInfo);
+    if (result == pifms::rpc_result::kOk && snapshot.active) {
+        static_cast<void>(GetAntivirusService().Reload(GetSessionManager()));
+    }
     return result;
 }
 
 extern "C" long PifmsEnsureAntivirusAvailable(handle_t)
 {
-    pifms::service::LicenseSnapshot snapshot;
-    const long result = GetSessionManager().GetLicenseInfo(snapshot);
-    if (result != pifms::rpc_result::kOk) {
-        return result;
+    return EnsureAntivirusReady();
+}
+
+extern "C" long PifmsGetAntivirusDatabaseInfo(handle_t, PifmsRpcAvDatabaseInfo* databaseInfo)
+{
+    if (databaseInfo == nullptr) {
+        return pifms::rpc_result::kInternalError;
     }
 
-    return snapshot.active ? pifms::rpc_result::kOk : pifms::rpc_result::kNoLicense;
+    pifms::service::LicenseSnapshot snapshot;
+    const long licenseResult = GetSessionManager().GetLicenseInfo(snapshot);
+    if (licenseResult == pifms::rpc_result::kOk && snapshot.active) {
+        static_cast<void>(GetAntivirusService().EnsureLoaded(GetSessionManager()));
+    }
+
+    FillRpcDatabaseInfo(GetAntivirusService().GetDatabaseInfo(), databaseInfo);
+    return licenseResult;
+}
+
+extern "C" long PifmsScanFile(handle_t, wchar_t* path, PifmsRpcScanResults* results)
+{
+    if (path == nullptr || results == nullptr) {
+        return pifms::rpc_result::kInternalError;
+    }
+
+    const long readyResult = EnsureAntivirusReady();
+    if (readyResult != pifms::rpc_result::kOk) {
+        return readyResult;
+    }
+
+    std::vector<pifms::service::ScanResult> scanResults;
+    const long result = GetAntivirusService().ScanFile(GetSessionManager(), path, scanResults);
+    FillRpcScanResults(scanResults, results);
+    return result;
+}
+
+extern "C" long PifmsScanDirectory(handle_t, wchar_t* path, PifmsRpcScanResults* results)
+{
+    if (path == nullptr || results == nullptr) {
+        return pifms::rpc_result::kInternalError;
+    }
+
+    const long readyResult = EnsureAntivirusReady();
+    if (readyResult != pifms::rpc_result::kOk) {
+        return readyResult;
+    }
+
+    std::vector<pifms::service::ScanResult> scanResults;
+    const long result = GetAntivirusService().ScanDirectory(GetSessionManager(), path, scanResults);
+    FillRpcScanResults(scanResults, results);
+    return result;
+}
+
+extern "C" long PifmsScanFixedDrives(handle_t, PifmsRpcScanResults* results)
+{
+    if (results == nullptr) {
+        return pifms::rpc_result::kInternalError;
+    }
+
+    const long readyResult = EnsureAntivirusReady();
+    if (readyResult != pifms::rpc_result::kOk) {
+        return readyResult;
+    }
+
+    std::vector<pifms::service::ScanResult> scanResults;
+    const long result = GetAntivirusService().ScanFixedDrives(GetSessionManager(), scanResults);
+    FillRpcScanResults(scanResults, results);
+    return result;
+}
+
+extern "C" long PifmsConfigureSchedule(handle_t, long targetType, wchar_t* path, unsigned long intervalMinutes)
+{
+    if (path == nullptr) {
+        return pifms::rpc_result::kInternalError;
+    }
+
+    const long readyResult = EnsureAntivirusReady();
+    if (readyResult != pifms::rpc_result::kOk) {
+        return readyResult;
+    }
+
+    return GetAntivirusService().ConfigureSchedule(
+        GetSessionManager(),
+        RpcTargetType(targetType),
+        path,
+        intervalMinutes
+    );
+}
+
+extern "C" long PifmsConfigureMonitoring(handle_t, wchar_t* path)
+{
+    if (path == nullptr) {
+        return pifms::rpc_result::kInternalError;
+    }
+
+    const long readyResult = EnsureAntivirusReady();
+    if (readyResult != pifms::rpc_result::kOk) {
+        return readyResult;
+    }
+
+    return GetAntivirusService().ConfigureMonitoring(GetSessionManager(), path);
+}
+
+extern "C" long PifmsGetScheduledScanResults(handle_t, PifmsRpcScanResults* results)
+{
+    if (results == nullptr) {
+        return pifms::rpc_result::kInternalError;
+    }
+
+    FillRpcScanResults(GetAntivirusService().GetScheduledResults(), results);
+    return pifms::rpc_result::kOk;
+}
+
+extern "C" long PifmsGetMonitoringScanResults(handle_t, PifmsRpcScanResults* results)
+{
+    if (results == nullptr) {
+        return pifms::rpc_result::kInternalError;
+    }
+
+    FillRpcScanResults(GetAntivirusService().GetMonitoringResults(), results);
+    return pifms::rpc_result::kOk;
 }
 
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR commandLine, int)
