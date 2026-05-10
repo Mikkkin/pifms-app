@@ -12,6 +12,7 @@ namespace pifms::service {
 struct HttpResponse {
     bool transportOk = false;
     DWORD statusCode = 0;
+    std::string contentType;
     std::string body;
 };
 
@@ -31,6 +32,10 @@ public:
         const std::string& activationCode
     ) const;
     [[nodiscard]] HttpResponse DownloadSignatureDatabase(const std::string& accessToken) const;
+    [[nodiscard]] HttpResponse DownloadSignatureRecords(
+        const std::string& accessToken,
+        const std::vector<std::string>& ids
+    ) const;
 
 private:
     [[nodiscard]] HttpResponse PostJson(

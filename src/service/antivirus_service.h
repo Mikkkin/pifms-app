@@ -19,6 +19,7 @@ public:
     AntivirusService(const AntivirusService&) = delete;
     AntivirusService& operator=(const AntivirusService&) = delete;
 
+    void Start(SessionManager& sessionManager);
     [[nodiscard]] long EnsureLoaded(SessionManager& sessionManager);
     [[nodiscard]] long Reload(SessionManager& sessionManager);
     [[nodiscard]] AntivirusDatabaseInfo GetDatabaseInfo() const;
@@ -38,13 +39,21 @@ public:
 private:
     static DWORD WINAPI ScheduleProc(void* context);
     static DWORD WINAPI MonitorProc(void* context);
+    static DWORD WINAPI DatabaseUpdateProc(void* context);
 
+    void StartDatabaseUpdateThread(SessionManager& sessionManager);
     void ScheduleLoop();
     void MonitorLoop();
+    void DatabaseUpdateLoop();
     void StopScheduleThread();
     void StopMonitorThread();
+    void StopDatabaseUpdateThread();
     void SaveScheduledResults(const std::vector<ScanResult>& results);
     void SaveMonitoringResults(const std::vector<ScanResult>& results);
+    [[nodiscard]] long LoadLocalDatabase();
+    [[nodiscard]] long LoadPackage(const std::vector<std::uint8_t>& packageData, SessionManager* sessionManager);
+    [[nodiscard]] long InstallDownloadedPackage(const std::vector<std::uint8_t>& packageData, SessionManager* sessionManager);
+    [[nodiscard]] long UpdateDatabase(SessionManager& sessionManager);
     [[nodiscard]] long ScanTargetLocked(
         SessionManager& sessionManager,
         ScanTargetType targetType,
@@ -58,8 +67,13 @@ private:
     HANDLE scheduleThread_ = nullptr;
     HANDLE monitorStopEvent_ = nullptr;
     HANDLE monitorThread_ = nullptr;
+    HANDLE databaseUpdateStopEvent_ = nullptr;
+    HANDLE databaseUpdateThread_ = nullptr;
     std::int64_t lastDatabaseLoadUnixSeconds_ = 0;
     SessionManager* sessionManager_ = nullptr;
+    SessionManager* databaseSessionManager_ = nullptr;
+    bool localLoadAttempted_ = false;
+    bool forceDatabaseUpdate_ = false;
     ScanTargetType scheduleTargetType_ = ScanTargetType::Directory;
     std::wstring schedulePath_;
     std::uint32_t scheduleIntervalMinutes_ = 0;

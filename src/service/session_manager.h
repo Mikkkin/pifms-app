@@ -37,6 +37,10 @@ public:
     [[nodiscard]] long GetLicenseInfo(LicenseSnapshot& license);
     [[nodiscard]] long ActivateProduct(const std::wstring& activationCode, LicenseSnapshot& license);
     [[nodiscard]] long DownloadSignatureDatabase(std::vector<std::uint8_t>& packageData);
+    [[nodiscard]] long DownloadSignatureRecords(
+        const std::vector<std::string>& ids,
+        std::vector<std::uint8_t>& packageData
+    );
 
 private:
     struct ParsedTicket {

@@ -5,12 +5,20 @@
 #include <algorithm>
 #include <ctime>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <string_view>
 
 namespace {
 
 constexpr std::size_t kMaxResults = pifms::kRpcScanResultCapacity;
-constexpr std::int64_t kDatabaseReloadIntervalSeconds = 30;
+constexpr std::int64_t kDatabaseUpdateIntervalSeconds = 5 * 60;
+constexpr wchar_t kDatabaseDirectory[] = L"PIFMS\\avdb";
+constexpr wchar_t kDatabaseFilename[] = L"signatures.pifmsdb";
+constexpr wchar_t kBackupDatabaseFilename[] = L"signatures.pifmsdb.bak";
+constexpr wchar_t kTemporaryDatabaseFilename[] = L"signatures.pifmsdb.tmp";
+constexpr wchar_t kDefaultDatabaseRelativePath[] = L"resources\\avdb\\default.pifmsdb";
+constexpr wchar_t kCertificateRelativePath[] = L"resources\\avdb\\signing.crt";
 
 std::int64_t NowUnixSeconds()
 {
@@ -161,6 +169,137 @@ std::wstring JoinPath(const std::wstring& directory, std::wstring_view filename)
     return path.wstring();
 }
 
+std::wstring ExecutableDirectory()
+{
+    std::wstring path(MAX_PATH, L'\0');
+    for (;;) {
+        const DWORD length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
+        if (length == 0) {
+            return {};
+        }
+        if (length < path.size() - 1) {
+            path.resize(length);
+            break;
+        }
+        path.resize(path.size() * 2);
+    }
+
+    const std::size_t separator = path.find_last_of(L"\\/");
+    if (separator == std::wstring::npos) {
+        return {};
+    }
+    path.resize(separator);
+    return path;
+}
+
+std::wstring ProgramDataDirectory()
+{
+    DWORD required = GetEnvironmentVariableW(L"ProgramData", nullptr, 0);
+    if (required == 0) {
+        return L"C:\\ProgramData";
+    }
+
+    std::wstring value(required, L'\0');
+    DWORD written = GetEnvironmentVariableW(L"ProgramData", value.data(), required);
+    if (written == 0 || written >= required) {
+        return L"C:\\ProgramData";
+    }
+    value.resize(written);
+    return value;
+}
+
+std::wstring DatabaseDirectory()
+{
+    return JoinPath(ProgramDataDirectory(), kDatabaseDirectory);
+}
+
+std::wstring MainDatabasePath()
+{
+    return JoinPath(DatabaseDirectory(), kDatabaseFilename);
+}
+
+std::wstring BackupDatabasePath()
+{
+    return JoinPath(DatabaseDirectory(), kBackupDatabaseFilename);
+}
+
+std::wstring TemporaryDatabasePath()
+{
+    return JoinPath(DatabaseDirectory(), kTemporaryDatabaseFilename);
+}
+
+std::wstring DefaultDatabasePath()
+{
+    return JoinPath(ExecutableDirectory(), kDefaultDatabaseRelativePath);
+}
+
+std::wstring CertificatePath()
+{
+    return JoinPath(ExecutableDirectory(), kCertificateRelativePath);
+}
+
+bool ReadAllBytes(const std::wstring& path, std::vector<std::uint8_t>& data)
+{
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+        return false;
+    }
+
+    data.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+    return !data.empty();
+}
+
+bool WriteAllBytes(const std::wstring& path, const std::vector<std::uint8_t>& data)
+{
+    std::error_code error;
+    std::filesystem::create_directories(std::filesystem::path(path).parent_path(), error);
+    if (error) {
+        return false;
+    }
+
+    std::ofstream file(path, std::ios::binary | std::ios::trunc);
+    if (!file) {
+        return false;
+    }
+
+    file.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
+    return file.good();
+}
+
+bool ReplaceFileWith(const std::wstring& source, const std::wstring& destination)
+{
+    std::error_code error;
+    std::filesystem::rename(source, destination, error);
+    if (!error) {
+        return true;
+    }
+
+    error.clear();
+    std::filesystem::copy_file(source, destination, std::filesystem::copy_options::overwrite_existing, error);
+    if (error) {
+        return false;
+    }
+
+    error.clear();
+    std::filesystem::remove(source, error);
+    return true;
+}
+
+void CopyIfExists(const std::wstring& source, const std::wstring& destination)
+{
+    std::error_code error;
+    if (!std::filesystem::exists(source, error)) {
+        return;
+    }
+    error.clear();
+    std::filesystem::create_directories(std::filesystem::path(destination).parent_path(), error);
+    if (error) {
+        return;
+    }
+    error.clear();
+    std::filesystem::copy_file(source, destination, std::filesystem::copy_options::overwrite_existing, error);
+}
+
 }
 
 namespace pifms::service {
@@ -170,10 +309,12 @@ AntivirusService::AntivirusService()
     InitializeCriticalSection(&lock_);
     scheduleStopEvent_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     monitorStopEvent_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    databaseUpdateStopEvent_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
 }
 
 AntivirusService::~AntivirusService()
 {
+    StopDatabaseUpdateThread();
     StopScheduleThread();
     StopMonitorThread();
     if (scheduleStopEvent_ != nullptr) {
@@ -182,24 +323,45 @@ AntivirusService::~AntivirusService()
     if (monitorStopEvent_ != nullptr) {
         CloseHandle(monitorStopEvent_);
     }
+    if (databaseUpdateStopEvent_ != nullptr) {
+        CloseHandle(databaseUpdateStopEvent_);
+    }
     DeleteCriticalSection(&lock_);
+}
+
+void AntivirusService::Start(SessionManager& sessionManager)
+{
+    StartDatabaseUpdateThread(sessionManager);
+
+    bool shouldLoad = false;
+    {
+        CriticalSectionLock lock(lock_);
+        shouldLoad = !localLoadAttempted_;
+        localLoadAttempted_ = true;
+    }
+
+    if (shouldLoad) {
+        static_cast<void>(LoadLocalDatabase());
+    }
 }
 
 [[nodiscard]] long AntivirusService::EnsureLoaded(SessionManager& sessionManager)
 {
-    bool hasLoadedDatabase = false;
+    Start(sessionManager);
+
     {
         CriticalSectionLock lock(lock_);
         const AntivirusDatabaseInfo info = database_.GetInfo();
-        hasLoadedDatabase = info.loaded;
-        const std::int64_t now = NowUnixSeconds();
-        if (info.loaded && now - lastDatabaseLoadUnixSeconds_ < kDatabaseReloadIntervalSeconds) {
+        if (info.loaded && !forceDatabaseUpdate_) {
             return rpc_result::kOk;
         }
     }
 
     const long reloadResult = Reload(sessionManager);
-    return reloadResult == rpc_result::kOk || hasLoadedDatabase ? rpc_result::kOk : reloadResult;
+    {
+        CriticalSectionLock lock(lock_);
+        return database_.GetInfo().loaded ? rpc_result::kOk : reloadResult;
+    }
 }
 
 [[nodiscard]] long AntivirusService::Reload(SessionManager& sessionManager)
@@ -210,17 +372,7 @@ AntivirusService::~AntivirusService()
         return downloadResult;
     }
 
-    AntivirusDatabase database;
-    if (!database.LoadRawPackage(packageData)) {
-        return rpc_result::kInvalidServerResponse;
-    }
-
-    {
-        CriticalSectionLock lock(lock_);
-        database_ = std::move(database);
-        lastDatabaseLoadUnixSeconds_ = NowUnixSeconds();
-    }
-    return rpc_result::kOk;
+    return InstallDownloadedPackage(packageData, &sessionManager);
 }
 
 [[nodiscard]] AntivirusDatabaseInfo AntivirusService::GetDatabaseInfo() const
@@ -370,6 +522,36 @@ DWORD WINAPI AntivirusService::MonitorProc(void* context)
     return 0;
 }
 
+DWORD WINAPI AntivirusService::DatabaseUpdateProc(void* context)
+{
+    static_cast<AntivirusService*>(context)->DatabaseUpdateLoop();
+    return 0;
+}
+
+void AntivirusService::StartDatabaseUpdateThread(SessionManager& sessionManager)
+{
+    {
+        CriticalSectionLock lock(lock_);
+        databaseSessionManager_ = &sessionManager;
+        if (databaseUpdateThread_ != nullptr || databaseUpdateStopEvent_ == nullptr) {
+            return;
+        }
+    }
+
+    ResetEvent(databaseUpdateStopEvent_);
+    HANDLE thread = CreateThread(nullptr, 0, DatabaseUpdateProc, this, 0, nullptr);
+    if (thread == nullptr) {
+        return;
+    }
+
+    CriticalSectionLock lock(lock_);
+    if (databaseUpdateThread_ == nullptr) {
+        databaseUpdateThread_ = thread;
+    } else {
+        CloseHandle(thread);
+    }
+}
+
 void AntivirusService::ScheduleLoop()
 {
     for (;;) {
@@ -489,6 +671,25 @@ void AntivirusService::MonitorLoop()
     }
 }
 
+void AntivirusService::DatabaseUpdateLoop()
+{
+    for (;;) {
+        if (WaitForSingleObject(databaseUpdateStopEvent_, kDatabaseUpdateIntervalSeconds * 1000U) == WAIT_OBJECT_0) {
+            return;
+        }
+
+        SessionManager* manager = nullptr;
+        {
+            CriticalSectionLock lock(lock_);
+            manager = databaseSessionManager_;
+        }
+
+        if (manager != nullptr) {
+            static_cast<void>(UpdateDatabase(*manager));
+        }
+    }
+}
+
 void AntivirusService::StopScheduleThread()
 {
     if (scheduleThread_ == nullptr) {
@@ -511,6 +712,17 @@ void AntivirusService::StopMonitorThread()
     monitorThread_ = nullptr;
 }
 
+void AntivirusService::StopDatabaseUpdateThread()
+{
+    if (databaseUpdateThread_ == nullptr) {
+        return;
+    }
+    SetEvent(databaseUpdateStopEvent_);
+    WaitForSingleObject(databaseUpdateThread_, 5000);
+    CloseHandle(databaseUpdateThread_);
+    databaseUpdateThread_ = nullptr;
+}
+
 void AntivirusService::SaveScheduledResults(const std::vector<ScanResult>& results)
 {
     CriticalSectionLock lock(lock_);
@@ -521,6 +733,107 @@ void AntivirusService::SaveMonitoringResults(const std::vector<ScanResult>& resu
 {
     CriticalSectionLock lock(lock_);
     monitoringResults_ = results;
+}
+
+[[nodiscard]] long AntivirusService::LoadLocalDatabase()
+{
+    std::vector<std::uint8_t> packageData;
+    if (ReadAllBytes(MainDatabasePath(), packageData) && LoadPackage(packageData, nullptr) == rpc_result::kOk) {
+        return rpc_result::kOk;
+    }
+
+    if (ReadAllBytes(BackupDatabasePath(), packageData) && LoadPackage(packageData, nullptr) == rpc_result::kOk) {
+        CopyIfExists(BackupDatabasePath(), MainDatabasePath());
+        return rpc_result::kOk;
+    }
+
+    if (ReadAllBytes(DefaultDatabasePath(), packageData) && LoadPackage(packageData, nullptr) == rpc_result::kOk) {
+        static_cast<void>(WriteAllBytes(MainDatabasePath(), packageData));
+        CriticalSectionLock lock(lock_);
+        forceDatabaseUpdate_ = true;
+        return rpc_result::kOk;
+    }
+
+    return rpc_result::kInvalidServerResponse;
+}
+
+[[nodiscard]] long AntivirusService::LoadPackage(
+    const std::vector<std::uint8_t>& packageData,
+    SessionManager* sessionManager
+)
+{
+    AntivirusDatabase database;
+    const AntivirusDatabaseLoadStatus status = database.LoadRawPackage(packageData, CertificatePath(), true);
+    if (status != AntivirusDatabaseLoadStatus::Ok) {
+        if (status == AntivirusDatabaseLoadStatus::InvalidManifestSignature) {
+            CriticalSectionLock lock(lock_);
+            forceDatabaseUpdate_ = true;
+        }
+        return rpc_result::kInvalidServerResponse;
+    }
+
+    const std::vector<std::string> invalidRecordIds = database.InvalidRecordIds();
+    if (sessionManager != nullptr && !invalidRecordIds.empty()) {
+        std::vector<std::uint8_t> repairedPackage;
+        if (sessionManager->DownloadSignatureRecords(invalidRecordIds, repairedPackage) == rpc_result::kOk) {
+            AntivirusDatabase repairedDatabase;
+            if (repairedDatabase.LoadRawPackage(repairedPackage, CertificatePath(), true) == AntivirusDatabaseLoadStatus::Ok &&
+                repairedDatabase.GetInfo().recordCount > 0) {
+                database.MergeFrom(repairedDatabase);
+            }
+        }
+    }
+
+    {
+        CriticalSectionLock lock(lock_);
+        database_ = std::move(database);
+        lastDatabaseLoadUnixSeconds_ = NowUnixSeconds();
+    }
+    return rpc_result::kOk;
+}
+
+[[nodiscard]] long AntivirusService::InstallDownloadedPackage(
+    const std::vector<std::uint8_t>& packageData,
+    SessionManager* sessionManager
+)
+{
+    CopyIfExists(MainDatabasePath(), BackupDatabasePath());
+
+    const std::wstring temporaryPath = TemporaryDatabasePath();
+    if (!WriteAllBytes(temporaryPath, packageData)) {
+        return rpc_result::kInternalError;
+    }
+
+    const long loadResult = LoadPackage(packageData, sessionManager);
+    if (loadResult != rpc_result::kOk) {
+        CopyIfExists(BackupDatabasePath(), MainDatabasePath());
+        std::vector<std::uint8_t> backupData;
+        if (ReadAllBytes(BackupDatabasePath(), backupData)) {
+            static_cast<void>(LoadPackage(backupData, nullptr));
+        }
+        return loadResult;
+    }
+
+    if (!ReplaceFileWith(temporaryPath, MainDatabasePath())) {
+        return rpc_result::kInternalError;
+    }
+
+    {
+        CriticalSectionLock lock(lock_);
+        forceDatabaseUpdate_ = false;
+    }
+
+    return rpc_result::kOk;
+}
+
+[[nodiscard]] long AntivirusService::UpdateDatabase(SessionManager& sessionManager)
+{
+    std::vector<std::uint8_t> packageData;
+    const long downloadResult = sessionManager.DownloadSignatureDatabase(packageData);
+    if (downloadResult != rpc_result::kOk) {
+        return downloadResult;
+    }
+    return InstallDownloadedPackage(packageData, &sessionManager);
 }
 
 [[nodiscard]] long AntivirusService::ScanTargetLocked(

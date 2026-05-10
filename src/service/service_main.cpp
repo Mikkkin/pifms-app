@@ -440,6 +440,7 @@ void WINAPI ServiceMain(DWORD, LPWSTR*)
     }
 
     SetServiceStatusState(SERVICE_RUNNING);
+    GetAntivirusService().Start(GetSessionManager());
     LaunchGuiForAllUserSessions();
 
     const RPC_STATUS listenStatus = RpcServerListen(
